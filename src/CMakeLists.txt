@@ -2,6 +2,7 @@ project(capture_3d)
 
 add_executable(${PROJECT_NAME}
     main.cpp
+    camera.cpp
 )
 find_package(OpenCV REQUIRED)
 include_directories(${OpenCV_INCLUDE_DIRS} ${zed_open_capture_SOURCE_DIR}/include  ${zed_open_capture_SOURCE_DIR}/examples/include)

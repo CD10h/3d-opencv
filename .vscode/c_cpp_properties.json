@@ -8,7 +8,7 @@
                 "${workspaceFolder}/build/_deps/zed-open-capture-src/include",
                 "${workspaceFolder}/build/_deps/zed-open-capture-src/examples/include"
             ],
-            "defines": [],
+            "defines": ["VIDEO_MOD_AVAILABLE"],
             "compilerPath": "/usr/bin/clang",
             "cStandard": "c17",
             "cppStandard": "c++17",
