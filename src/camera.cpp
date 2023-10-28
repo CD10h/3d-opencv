@@ -1,6 +1,7 @@
 #include "camera.h"
 
 #include <cassert>
+
 bool CameraWrapped::init(int device_id = -1)
 {
     return this->video_device.initializeVideo(device_id);
@@ -8,6 +9,7 @@ bool CameraWrapped::init(int device_id = -1)
 
 bool CameraWrapped::captureFrame()
 {
+
     auto frame = this->video_device.getLastFrame();
     if (frame.data == nullptr)
     {
@@ -93,12 +95,7 @@ void CameraWrapped::initCalibration()
     int w, h;
     this->video_device.getFrameSize(w, h);
 
-    if (!sl_oc::tools::initCalibration(calibration_file, cv::Size(w / 2, h), map_left_x, map_left_y, map_right_x, map_right_y,
-                                       cameraMatrix_left, cameraMatrix_right))
-    {
-        std::cerr << "BAD!!!" << std::endl;
-        abort();
-    }
+    this->calibration = getCalibration(cv::Size(w / 2, h));
 }
 
 // Set new value for the active control
@@ -296,7 +293,8 @@ void CameraWrapped::changeControlValue(CamControlParams param, bool increase)
 }
 
 // Rescale the images according to the selected resolution to better display them on screen
-void CameraWrapped::cvShowImage(std::string name, const std::string &win_name, cv::Mat &img, bool drawROI, int img_w, int img_h)
+void CameraWrapped::cvShowImage(std::string name, const std::string &win_name, cv::Mat &img, bool drawROI, int img_w,
+                                int img_h)
 {
     double img_resize_factor = 1.0; // Image resize factor for drawing
 
@@ -392,155 +390,16 @@ std::pair<cv::Mat, cv::Mat> CameraWrapped::GetRawLR()
     left = combinedStereo(cv::Rect(0, 0, combinedStereo.cols / 2, combinedStereo.rows));
     right = combinedStereo(cv::Rect(combinedStereo.cols / 2, 0, combinedStereo.cols / 2, combinedStereo.rows));
 
-    return std::pair<cv::Mat, cv::Mat>(left, right);
-}
-std::pair<cv::Mat, cv::Mat> CameraWrapped::GetRectifiedLR()
-{
-    std::pair<cv::Mat, cv::Mat> rawLR = this->GetRawLR();
-
-    cv::Mat raw_left, raw_right, rectified_left, rectified_right;
-    raw_left = rawLR.first;
-    raw_right = rawLR.second;
-
-    cv::remap(raw_left, rectified_left, map_left_x, map_left_y, cv::INTER_LINEAR);
-    cv::remap(raw_right, rectified_right, map_right_x, map_right_y, cv::INTER_LINEAR);
-
-    return std::pair<cv::Mat, cv::Mat>(rectified_left, rectified_right);
+    return std::pair<cv::Mat, cv::Mat>(std::move(left), std::move(right));
 }
 
-#undef HAVE_OPENCV_VIZ // Uncomment if cannot use Viz3D for point cloud rendering
-
-#if HAVE_OPENCV_VIZ == 1
-#include <opencv2/viz.hpp>
-#include <opencv2/viz/viz3d.hpp>
-#endif
-
-#define USE_OCV_TAPI       // Comment to use "normal" cv::Mat instead of CV::UMat
-#define USE_HALF_SIZE_DISP // Comment to compute depth matching on full image frames
-
-void CameraWrapped::init_depthmatch()
+void CameraWrapped::GetRectifiedLR(cv::OutputArray &outLeft, cv::OutputArray &outRight)
 {
+    auto lr_raw = this->GetRawLR();
 
-    fx = cameraMatrix_left.at<double>(0, 0);
-    fy = cameraMatrix_left.at<double>(1, 1);
-    cx = cameraMatrix_left.at<double>(0, 2);
-    cy = cameraMatrix_left.at<double>(1, 2);
+    cv::Mat left_raw = lr_raw.first;
+    cv::Mat right_raw = lr_raw.second;
 
-    std::cout << " Camera Matrix L: \n"
-              << cameraMatrix_left << std::endl
-              << std::endl;
-    std::cout << " Camera Matrix R: \n"
-              << cameraMatrix_right << std::endl
-              << std::endl;
-
-    cv::UMat map_left_x_gpu = map_left_x.getUMat(cv::ACCESS_READ, cv::USAGE_ALLOCATE_DEVICE_MEMORY);
-    cv::UMat map_left_y_gpu = map_left_y.getUMat(cv::ACCESS_READ, cv::USAGE_ALLOCATE_DEVICE_MEMORY);
-    cv::UMat map_right_x_gpu = map_right_x.getUMat(cv::ACCESS_READ, cv::USAGE_ALLOCATE_DEVICE_MEMORY);
-    cv::UMat map_right_y_gpu = map_right_y.getUMat(cv::ACCESS_READ, cv::USAGE_ALLOCATE_DEVICE_MEMORY);
-
-       this->left_matcher = cv::StereoSGBM::create(stereoPar.minDisparity, stereoPar.numDisparities, stereoPar.blockSize);
-    left_matcher->setMinDisparity(stereoPar.minDisparity);
-    left_matcher->setNumDisparities(stereoPar.numDisparities);
-    left_matcher->setBlockSize(stereoPar.blockSize);
-    left_matcher->setP1(stereoPar.P1);
-    left_matcher->setP2(stereoPar.P2);
-    left_matcher->setDisp12MaxDiff(stereoPar.disp12MaxDiff);
-    left_matcher->setMode(stereoPar.mode);
-    left_matcher->setPreFilterCap(stereoPar.preFilterCap);
-    left_matcher->setUniquenessRatio(stereoPar.uniquenessRatio);
-    left_matcher->setSpeckleWindowSize(stereoPar.speckleWindowSize);
-    left_matcher->setSpeckleRange(stereoPar.speckleRange);
-}
-
-void CameraWrapped::depth_single_frame(bool half = true)
-{
-    const double baseline = 0;
-    auto frame = this->last_frame;
-    // ----> If the frame is valid we can convert, rectify and display it
-    {
-
-        auto rectLR = this->GetRectifiedLR();
-        cv::UMat left_rect = rectLR.first.getUMat(cv::ACCESS_READ);
-        cv::UMat right_rect = rectLR.second.getUMat(cv::ACCESS_READ);
-        cv::UMat left_for_matcher;  // Left image for the stereo matcher
-        cv::UMat right_for_matcher; // Right image for the stereo matcher
-        cv::UMat left_disp_half;    // Half sized disparity map
-        cv::UMat left_disp_float;   // Final disparity map in float32
-        cv::UMat left_disp;         // Full output disparity
-
-        cv::UMat left_disp_image; // Normalized and color remapped disparity map to be displayed
-        cv::UMat left_depth_map;  // Depth map in float32
-
-        // ----> Stereo matching
-        double resize_fact = 1.0;
-        if (half)
-        {
-            resize_fact = 0.5;
-            // Resize the original images to improve performances
-            cv::resize(left_rect, left_for_matcher, cv::Size(), resize_fact, resize_fact, cv::INTER_AREA);
-            cv::resize(right_rect, right_for_matcher, cv::Size(), resize_fact, resize_fact, cv::INTER_AREA);
-        }
-        else
-        {
-            left_for_matcher = left_rect;   // No data copy
-            right_for_matcher = right_rect; // No data copy
-        }
-        // Apply stereo matching
-        left_matcher->compute(left_for_matcher, right_for_matcher, left_disp_half);
-
-        left_disp_half.convertTo(left_disp_float, CV_32FC1);
-        cv::multiply(left_disp_float, 1. / 16., left_disp_float); // Last 4 bits of SGBM disparity are decimal
-
-        if (half)
-        {
-            cv::multiply(left_disp_float, 2., left_disp_float); // Last 4 bits of SGBM disparity are decimal
-            cv::UMat tmp = left_disp_float;                     // Required for OpenCV 3.2
-            cv::resize(tmp, left_disp_float, cv::Size(), 1. / resize_fact, 1. / resize_fact, cv::INTER_AREA);
-        }
-        else
-        {
-            left_disp = left_disp_float;
-        }
-
-        // ----> Show disparity image
-        cv::add(left_disp_float, -static_cast<double>(stereoPar.minDisparity - 1), left_disp_float);  // Minimum disparity offset correction
-        cv::multiply(left_disp_float, 1. / stereoPar.numDisparities, left_disp_image, 255., CV_8UC1); // Normalization and rescaling
-
-        cv::applyColorMap(left_disp_image, left_disp_image, cv::COLORMAP_JET); // COLORMAP_INFERNO is better, but it's only available starting from OpenCV v4.1.0
-
-        // <---- Show disparity image
-
-        // ----> Extract Depth map
-        // The DISPARITY MAP can be now transformed in DEPTH MAP using the formula
-        // depth = (f * B) / disparity
-        // where 'f' is the camera focal, 'B' is the camera baseline, 'disparity' is the pixel disparity
-
-        double num = static_cast<double>(fx * baseline);
-        cv::divide(num, left_disp_float, left_depth_map);
-
-        float central_depth = left_depth_map.getMat(cv::ACCESS_READ).at<float>(left_depth_map.rows / 2, left_depth_map.cols / 2);
-        std::cout << "Depth of the central pixel: " << central_depth << " mm" << std::endl;
-        // <---- Extract Depth map
-
-        // ----> Create Point Cloud
-        size_t buf_size = static_cast<size_t>(left_depth_map.cols * left_depth_map.rows);
-        std::vector<cv::Vec3d> buffer(buf_size, cv::Vec3f::all(std::numeric_limits<float>::quiet_NaN()));
-        cv::Mat depth_map_cpu = left_depth_map.getMat(cv::ACCESS_READ);
-        float *depth_vec = (float *)(&(depth_map_cpu.data[0]));
-
-        // omp parallel
-        for (size_t idx = 0; idx < buf_size; idx++)
-        {
-            size_t r = idx / left_depth_map.cols;
-            size_t c = idx % left_depth_map.cols;
-            double depth = static_cast<double>(depth_vec[idx]);
-            if (!isinf(depth) && depth >= 0 && depth > stereoPar.minDepth_mm && depth < stereoPar.maxDepth_mm)
-            {
-                buffer[idx].val[2] = depth;                 // Z
-                buffer[idx].val[0] = (c - cx) * depth / fx; // X
-                buffer[idx].val[1] = (r - cy) * depth / fy; // Y
-            }
-        }
-        cv::Mat cloudMat = cv::Mat(left_depth_map.rows, left_depth_map.cols, CV_64FC3, &buffer[0]).clone();
-    }
+    cv::remap(left_raw, outLeft, calibration.undistortLeftX, calibration.undistortLeftY, cv::INTER_AREA);
+    cv::remap(right_raw, outRight, calibration.undistortRightX, calibration.undistortRightY, cv::INTER_AREA);
 }
