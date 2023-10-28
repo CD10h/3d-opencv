@@ -1,0 +1,9 @@
+diff -Naur zed-open-capture-src/CMakeLists.txt zed-open-capture-srcpatch/CMakeLists.txt
+--- zed-open-capture-src/CMakeLists.txt	2023-10-28 13:05:02.859900434 +0300
++++ zed-open-capture-srcpatch/CMakeLists.txt	2023-10-28 13:06:02.899362398 +0300
+@@ -1,4 +1,4 @@
+-cmake_minimum_required(VERSION 3.1)
++cmake_minimum_required(VERSION 3.6)
+ 
+ set(PROJECT_NAME zed_open_capture)
+ 
